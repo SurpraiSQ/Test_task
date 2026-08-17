@@ -20,6 +20,71 @@ import sys
 import os
 
 
+def export_aggregate_tables(category_table, franchise_table, user_table, df_transactions):
+    """
+    Export aggregate tables to separate CSV files.
+    
+    Args:
+        category_table (pd.DataFrame): Products sold by category
+        franchise_table (pd.DataFrame): Products sold by franchise
+        user_table (pd.DataFrame): Transactions by user
+        df_transactions (pd.DataFrame): Transaction data
+    """
+    try:
+        print("\n[EXPORTING] Creating separate table files...")
+        
+        # 1. Export Products Sold by Category
+        category_export = category_table.copy()
+        category_export.to_csv('aggregate_products_by_category.csv', index=False)
+        print(f"✓ Saved: aggregate_products_by_category.csv ({len(category_export)} rows)")
+        
+        # 2. Export Products Sold by Franchise
+        franchise_export = franchise_table.copy()
+        franchise_export.to_csv('aggregate_products_by_franchise.csv', index=False)
+        print(f"✓ Saved: aggregate_products_by_franchise.csv ({len(franchise_export)} rows)")
+        
+        # 3. Export Transactions by User (All customers)
+        user_export = user_table.copy()
+        user_export.to_csv('aggregate_transactions_by_user.csv', index=False)
+        print(f"✓ Saved: aggregate_transactions_by_user.csv ({len(user_export)} rows)")
+        
+        # 4. Export Top 10 Returning Users by Spend
+        top_users = df_transactions.groupby('customer_id')['line_total_usd'].sum().reset_index()
+        top_users.columns = ['Customer_ID', 'Total_Spend_USD']
+        top_users = top_users.sort_values(by='Total_Spend_USD', ascending=False).head(10)
+        top_users['Rank'] = range(1, len(top_users) + 1)
+        top_users = top_users[['Rank', 'Customer_ID', 'Total_Spend_USD']]
+        top_users.to_csv('aggregate_top_10_users_by_spend.csv', index=False)
+        print(f"✓ Saved: aggregate_top_10_users_by_spend.csv (10 rows)")
+        
+        # 5. Export Revenue Summary
+        revenue_summary = pd.DataFrame({
+            'Metric': [
+                'Total Revenue (USD)',
+                'Total Units Sold',
+                'Total Transactions',
+                'Unique Customers',
+                'Average Transaction Value (USD)',
+                'Average Customer Spend (USD)'
+            ],
+            'Value': [
+                f"{df_transactions['line_total_usd'].sum():,.2f}",
+                f"{df_transactions['quantity'].sum():,}",
+                f"{len(df_transactions):,}",
+                f"{df_transactions['customer_id'].nunique():,}",
+                f"{df_transactions['line_total_usd'].mean():,.2f}",
+                f"{df_transactions.groupby('customer_id')['line_total_usd'].sum().mean():,.2f}"
+            ]
+        })
+        revenue_summary.to_csv('aggregate_revenue_summary.csv', index=False)
+        print(f"✓ Saved: aggregate_revenue_summary.csv (summary metrics)")
+        
+        print("\n📁 All table files exported to workspace root!")
+        
+    except Exception as e:
+        print(f"❌ Error exporting tables: {e}")
+
+
 def detect_franchise_column(df_inventory):
     """
     Dynamically detect the franchise/brand column in the inventory DataFrame.
@@ -115,6 +180,7 @@ def perform_eda(df_transactions, df_inventory):
 def process_and_aggregate(df_transactions, df_inventory):
     """
     Perform data processing and create aggregation tables.
+    Filters for only COMPLETED transactions.
     
     Args:
         df_transactions (pd.DataFrame): Transaction data
@@ -124,8 +190,17 @@ def process_and_aggregate(df_transactions, df_inventory):
         tuple: (df_merged, franchise_column_name)
     """
     print("\n" + "="*80)
-    print("2. DATA PROCESSING & AGGREGATION")
+    print("2. DATA PROCESSING & AGGREGATION (COMPLETED TRANSACTIONS ONLY)")
     print("="*80)
+    
+    # Filter for completed transactions only
+    total_transactions = len(df_transactions)
+    df_transactions = df_transactions[df_transactions['order_status'] == 'Completed']
+    completed_count = len(df_transactions)
+    print(f"\n📊 Transaction Filter Applied:")
+    print(f"   Total Transactions: {total_transactions:,}")
+    print(f"   Completed Transactions: {completed_count:,}")
+    print(f"   Filtered Out: {total_transactions - completed_count:,} ({100 * (total_transactions - completed_count) / total_transactions:.1f}%)")
     
     # Merge transactions and inventory
     try:
@@ -168,6 +243,9 @@ def process_and_aggregate(df_transactions, df_inventory):
     print(f"Total unique customers: {len(transactions_by_user):,}")
     print("\nTop 10 customers by transaction count:")
     print(transactions_by_user.head(10).to_string(index=False))
+    
+    # Export tables to separate CSV files
+    export_aggregate_tables(sold_by_category, sold_by_franchise, transactions_by_user, df_transactions)
     
     return df_merged, franchise_col
 
