@@ -1,91 +1,421 @@
+"""
+Data Pipeline: Transaction and Inventory Analysis
+
+This script loads daily transaction and product inventory data from parquet files,
+performs exploratory data analysis (EDA), aggregations, and creates visualizations.
+
+Requirements:
+- pandas
+- matplotlib
+- pyarrow or fastparquet (for parquet support)
+
+Author: Data Engineer
+Date: 2026-08-17
+"""
+
 import pandas as pd
 import glob
 import matplotlib.pyplot as plt
- 
-def main():
-    print("=== 1. ЗАГРУЗКА И ИЗУЧЕНИЕ ДАННЫХ (EDA) ===")
+import sys
+import os
+
+
+def detect_franchise_column(df_inventory):
+    """
+    Dynamically detect the franchise/brand column in the inventory DataFrame.
     
-    # Ищем все 5 файлов транзакций
-    transaction_files = glob.glob('daily_transactions_*.parquet')
+    Args:
+        df_inventory (pd.DataFrame): The inventory data
+        
+    Returns:
+        str: The name of the franchise column, or None if not found
+    """
+    # List of common franchise column names
+    possible_names = ['franchise', 'franchise_theme', 'brand', 'Franchise', 'Brand', 'FRANCHISE', 'BRAND']
     
-    if not transaction_files:
-        print("Файлы транзакций не найдены! Убедись, что они загружены в корень проекта.")
-        return
- 
-    # Читаем и объединяем транзакции
-    df_transactions = pd.concat([pd.read_parquet(f) for f in transaction_files], ignore_index=True)
+    for col_name in possible_names:
+        if col_name in df_inventory.columns:
+            print(f"✓ Detected franchise column: '{col_name}'")
+            return col_name
     
-    # Читаем файл инвентаря
-    df_inventory = pd.read_parquet('product_inventory.parquet')
- 
-    # Рассказываем о данных (Tell me about the data)
-    print("\n[Характеристики Transaction Data]")
-    print(f"Количество строк и колонок: {df_transactions.shape}")
-    print("\nТипы данных:")
-    print(df_transactions.dtypes)
+    # If no standard name found, print warning
+    print("⚠ Warning: No franchise/brand column detected with standard names.")
+    print(f"   Available columns: {df_inventory.columns.tolist()}")
+    return None
+
+
+def load_data():
+    """
+    Load transaction and inventory data from parquet files.
     
-    print("\n[Характеристики Inventory Data]")
-    print(f"Количество строк и колонок: {df_inventory.shape}")
- 
-    print("\n=== 2. ПРОЦЕССИНГ И АГРЕГАЦИЯ ===")
+    Returns:
+        tuple: (df_transactions, df_inventory) or (None, None) if loading fails
+    """
+    try:
+        # Load all transaction files
+        transaction_files = sorted(glob.glob('daily_transactions_*.parquet'))
+        
+        if not transaction_files:
+            print("❌ Error: No transaction files found! Expected files like 'daily_transactions_YYYY-MM-DD.parquet'")
+            return None, None
+        
+        print(f"Loading {len(transaction_files)} transaction file(s)...")
+        df_transactions = pd.concat(
+            [pd.read_parquet(f) for f in transaction_files],
+            ignore_index=True
+        )
+        
+        # Load inventory file
+        if not os.path.exists('product_inventory.parquet'):
+            print("❌ Error: product_inventory.parquet not found!")
+            return None, None
+        
+        print("Loading inventory file...")
+        df_inventory = pd.read_parquet('product_inventory.parquet')
+        
+        return df_transactions, df_inventory
+        
+    except Exception as e:
+        print(f"❌ Error loading data: {e}")
+        return None, None
+
+
+def perform_eda(df_transactions, df_inventory):
+    """
+    Perform Exploratory Data Analysis on transaction and inventory data.
     
-    # Объединяем транзакции и инвентарь по product_id
-    df_merged = df_transactions.merge(df_inventory, on='product_id', how='left')
- 
-    # 1. Aggregate table of products sold by category
-    # Суммируем количество (quantity) по категориям
-    sold_by_category = df_merged.groupby('category')['quantity'].sum().reset_index()
-    sold_by_category = sold_by_category.sort_values(by='quantity', ascending=False)
-    print("\n--- Products Sold by Category ---")
+    Args:
+        df_transactions (pd.DataFrame): Transaction data
+        df_inventory (pd.DataFrame): Inventory data
+    """
+    print("\n" + "="*80)
+    print("1. EXPLORATORY DATA ANALYSIS (EDA)")
+    print("="*80)
+    
+    # Transaction Data Characteristics
+    print("\n[TRANSACTION DATA - What We Found]")
+    print(f"  Shape: {df_transactions.shape[0]:,} rows × {df_transactions.shape[1]} columns")
+    print(f"  Date Range: {df_transactions['timestamp'].min()} to {df_transactions['timestamp'].max()}")
+    print(f"  Unique Customers: {df_transactions['customer_id'].nunique():,}")
+    print(f"  Unique Products: {df_transactions['product_id'].nunique():,}")
+    print(f"  Total Revenue: ${df_transactions['line_total_usd'].sum():,.2f}")
+    print(f"  Total Units Sold: {df_transactions['quantity'].sum():,}")
+    print(f"  Missing Values:\n{df_transactions.isnull().sum()}")
+    print(f"\n  Data Types:\n{df_transactions.dtypes}")
+    
+    # Inventory Data Characteristics
+    print("\n[INVENTORY DATA - What We Found]")
+    print(f"  Shape: {df_inventory.shape[0]:,} rows × {df_inventory.shape[1]} columns")
+    print(f"  Active Products: {df_inventory['active'].sum():,}")
+    print(f"  Total Stock Value: ${(df_inventory['stock_quantity'] * df_inventory['unit_cost_usd']).sum():,.2f}")
+    print(f"  Missing Values:\n{df_inventory.isnull().sum()}")
+    print(f"\n  Data Types:\n{df_inventory.dtypes}")
+
+
+def process_and_aggregate(df_transactions, df_inventory):
+    """
+    Perform data processing and create aggregation tables.
+    
+    Args:
+        df_transactions (pd.DataFrame): Transaction data
+        df_inventory (pd.DataFrame): Inventory data
+        
+    Returns:
+        tuple: (df_merged, franchise_column_name)
+    """
+    print("\n" + "="*80)
+    print("2. DATA PROCESSING & AGGREGATION")
+    print("="*80)
+    
+    # Merge transactions and inventory
+    try:
+        df_merged = df_transactions.merge(df_inventory, on='product_id', how='left')
+        print(f"\n✓ Successfully merged data: {df_merged.shape[0]:,} rows")
+    except Exception as e:
+        print(f"❌ Error merging data: {e}")
+        return None, None
+    
+    # Detect franchise column dynamically
+    franchise_col = detect_franchise_column(df_inventory)
+    
+    # Aggregation 1: Products Sold by Category
+    print("\n[1] Products Sold by Category")
+    print("-" * 80)
+    sold_by_category = df_merged.groupby('category', dropna=False)['quantity'].sum().reset_index()
+    sold_by_category.columns = ['Category', 'Total_Quantity_Sold']
+    sold_by_category = sold_by_category.sort_values(by='Total_Quantity_Sold', ascending=False)
     print(sold_by_category.to_string(index=False))
- 
-    # 2. Aggregate table of products sold by franchise
-    # Суммируем количество (quantity) по франшизам
-    sold_by_franchise = df_merged.groupby('franchise')['quantity'].sum().reset_index()
-    sold_by_franchise = sold_by_franchise.sort_values(by='quantity', ascending=False)
-    print("\n--- Products Sold by Franchise ---")
-    print(sold_by_franchise.to_string(index=False))
- 
-    # 3. Table of transactions by user
-    # Считаем уникальные transaction_id для каждого customer_id
+    
+    # Aggregation 2: Products Sold by Franchise (if available)
+    if franchise_col:
+        print("\n[2] Products Sold by Franchise/Brand")
+        print("-" * 80)
+        sold_by_franchise = df_merged.groupby(franchise_col, dropna=False)['quantity'].sum().reset_index()
+        sold_by_franchise.columns = ['Franchise_Theme', 'Total_Quantity_Sold']
+        sold_by_franchise = sold_by_franchise.sort_values(by='Total_Quantity_Sold', ascending=False)
+        print(sold_by_franchise.to_string(index=False))
+    else:
+        print("\n[2] Products Sold by Franchise/Brand")
+        print("-" * 80)
+        print("⚠ Franchise column not available for aggregation")
+    
+    # Aggregation 3: Transactions by User (Count of unique transactions per customer)
+    print("\n[3] Transactions by User")
+    print("-" * 80)
     transactions_by_user = df_transactions.groupby('customer_id')['transaction_id'].nunique().reset_index()
-    transactions_by_user.rename(columns={'transaction_id': 'total_transactions'}, inplace=True)
-    transactions_by_user = transactions_by_user.sort_values(by='total_transactions', ascending=False)
-    print("\n--- Transactions by User (Top 10 выведено для удобства) ---")
+    transactions_by_user.columns = ['Customer_ID', 'Unique_Transactions']
+    transactions_by_user = transactions_by_user.sort_values(by='Unique_Transactions', ascending=False)
+    print(f"Total unique customers: {len(transactions_by_user):,}")
+    print("\nTop 10 customers by transaction count:")
     print(transactions_by_user.head(10).to_string(index=False))
- 
-    print("\n=== 3. BONUS TASK ===")
-    # Bonus: Top ten returning users based on their spend over the five days
-    # Группируем по покупателю и суммируем потраченные деньги (line_total_usd)
-    top_returning_users = df_transactions.groupby('customer_id')['line_total_usd'].sum().reset_index()
-    top_returning_users = top_returning_users.sort_values(by='line_total_usd', ascending=False).head(10)
-    top_returning_users.rename(columns={'line_total_usd': 'total_spend_usd'}, inplace=True)
-    print("\n--- Top 10 Returning Users by Spend ---")
-    print(top_returning_users.to_string(index=False))
- 
-    print("\n=== 4. ВИЗУАЛИЗАЦИЯ ===")
-    # Graph showing total revenue for the day broken down by payment type
     
-    # Создаем новую колонку 'date', извлекая только день из timestamp
-    df_merged['date'] = pd.to_datetime(df_merged['timestamp']).dt.date
+    return df_merged, franchise_col
+
+
+def bonus_top_returning_users(df_transactions):
+    """
+    Bonus Task: Identify top ten returning users based on spend.
     
-    # Агрегируем выручку по дате и методу оплаты
-    revenue_by_payment = df_merged.groupby(['date', 'payment_method'])['line_total_usd'].sum().unstack()
- 
-    # Строим Stacked Bar Chart (столбчатая диаграмма с накоплением - отлично подходит для breakdown)
-    revenue_by_payment.plot(kind='bar', stacked=True, figsize=(10, 6), colormap='viridis')
+    Args:
+        df_transactions (pd.DataFrame): Transaction data
+    """
+    print("\n" + "="*80)
+    print("3. BONUS: TOP 10 RETURNING USERS BY TOTAL SPEND")
+    print("="*80)
     
-    plt.title('Total Revenue per Day by Payment Method')
-    plt.xlabel('Date')
-    plt.ylabel('Total Revenue (USD)')
-    plt.xticks(rotation=45)
-    plt.legend(title='Payment Method', bbox_to_anchor=(1.05, 1), loc='upper left')
-    plt.tight_layout()
+    top_users = df_transactions.groupby('customer_id')['line_total_usd'].sum().reset_index()
+    top_users.columns = ['Customer_ID', 'Total_Spend_USD']
+    top_users = top_users.sort_values(by='Total_Spend_USD', ascending=False).head(10)
+    top_users['Rank'] = range(1, len(top_users) + 1)
+    top_users = top_users[['Rank', 'Customer_ID', 'Total_Spend_USD']]
+    top_users['Total_Spend_USD'] = top_users['Total_Spend_USD'].apply(lambda x: f"${x:,.2f}")
     
-    # Сохраняем график
-    plt.savefig('revenue_by_payment.png')
-    print("\n✅ График успешно сгенерирован и сохранен как 'revenue_by_payment.png'!")
- 
+    print(top_users.to_string(index=False))
+
+
+def create_visualizations(df_merged):
+    """
+    Create multiple visualizations for comprehensive data analysis.
+    
+    Args:
+        df_merged (pd.DataFrame): Merged transaction and inventory data
+    """
+    print("\n" + "="*80)
+    print("4. VISUALIZATIONS (MULTIPLE GRAPHICS)")
+    print("="*80)
+    
+    try:
+        # Extract date from timestamp
+        df_merged['date'] = pd.to_datetime(df_merged['timestamp']).dt.date
+        
+        # Graph 1: Revenue by Payment Method (Stacked Bar)
+        print("\n[Graph 1] Creating: Revenue by Payment Method...")
+        revenue_by_payment = df_merged.groupby(['date', 'payment_method'], dropna=False)['line_total_usd'].sum().unstack(fill_value=0)
+        
+        fig, ax = plt.subplots(figsize=(12, 6))
+        revenue_by_payment.plot(
+            kind='bar',
+            stacked=True,
+            ax=ax,
+            colormap='Set3',
+            width=0.7
+        )
+        
+        plt.title('Total Daily Revenue by Payment Method', fontsize=14, fontweight='bold')
+        plt.xlabel('Date', fontsize=12)
+        plt.ylabel('Total Revenue (USD)', fontsize=12)
+        plt.xticks(rotation=45, ha='right')
+        plt.legend(title='Payment Method', bbox_to_anchor=(1.05, 1), loc='upper left', fontsize=10)
+        plt.grid(axis='y', alpha=0.3)
+        plt.tight_layout()
+        
+        plt.savefig('revenue_by_payment.png', dpi=300, bbox_inches='tight')
+        plt.close()
+        print("✓ Saved as 'revenue_by_payment.png'")
+        
+        # Graph 2: Top 10 Products by Revenue
+        print("\n[Graph 2] Creating: Top 10 Products by Revenue...")
+        top_products = df_merged.groupby('product_name')['line_total_usd'].sum().nlargest(10).reset_index()
+        
+        fig, ax = plt.subplots(figsize=(12, 6))
+        bars = ax.barh(range(len(top_products)), top_products['line_total_usd'], color='steelblue')
+        ax.set_yticks(range(len(top_products)))
+        ax.set_yticklabels(top_products['product_name'], fontsize=10)
+        ax.set_xlabel('Total Revenue (USD)', fontsize=12)
+        ax.set_title('Top 10 Products by Revenue', fontsize=14, fontweight='bold')
+        
+        # Add value labels
+        for i, (idx, row) in enumerate(top_products.iterrows()):
+            ax.text(row['line_total_usd'], i, f"  ${row['line_total_usd']:,.0f}", 
+                   va='center', fontsize=9)
+        
+        plt.tight_layout()
+        plt.savefig('top_10_products_by_revenue.png', dpi=300, bbox_inches='tight')
+        plt.close()
+        print("✓ Saved as 'top_10_products_by_revenue.png'")
+        
+        # Graph 3: Category Revenue Distribution (Pie Chart)
+        print("\n[Graph 3] Creating: Category Revenue Distribution...")
+        category_revenue = df_merged.groupby('category')['line_total_usd'].sum()
+        
+        fig, ax = plt.subplots(figsize=(10, 8))
+        colors = plt.cm.Set3(range(len(category_revenue)))
+        wedges, texts, autotexts = ax.pie(
+            category_revenue,
+            labels=category_revenue.index,
+            autopct='%1.1f%%',
+            startangle=90,
+            colors=colors,
+            textprops={'fontsize': 10}
+        )
+        
+        # Make percentage text bold
+        for autotext in autotexts:
+            autotext.set_color('black')
+            autotext.set_fontweight('bold')
+        
+        plt.title('Revenue Distribution by Category', fontsize=14, fontweight='bold')
+        plt.tight_layout()
+        plt.savefig('revenue_by_category_pie.png', dpi=300, bbox_inches='tight')
+        plt.close()
+        print("✓ Saved as 'revenue_by_category_pie.png'")
+        
+        # Graph 4: Top 10 Franchises by Revenue (Bar Chart)
+        print("\n[Graph 4] Creating: Top 10 Franchises by Revenue...")
+        top_franchises = df_merged.groupby('franchise_theme')['line_total_usd'].sum().nlargest(10).reset_index()
+        
+        fig, ax = plt.subplots(figsize=(12, 6))
+        bars = ax.bar(range(len(top_franchises)), top_franchises['line_total_usd'], color='coral')
+        ax.set_xticks(range(len(top_franchises)))
+        ax.set_xticklabels(top_franchises['franchise_theme'], rotation=45, ha='right', fontsize=10)
+        ax.set_ylabel('Total Revenue (USD)', fontsize=12)
+        ax.set_title('Top 10 Franchises by Revenue', fontsize=14, fontweight='bold')
+        ax.grid(axis='y', alpha=0.3)
+        
+        # Add value labels on bars
+        for i, v in enumerate(top_franchises['line_total_usd']):
+            ax.text(i, v, f"${v/1e6:.2f}M", ha='center', va='bottom', fontsize=9)
+        
+        plt.tight_layout()
+        plt.savefig('top_10_franchises_by_revenue.png', dpi=300, bbox_inches='tight')
+        plt.close()
+        print("✓ Saved as 'top_10_franchises_by_revenue.png'")
+        
+        # Graph 5: Daily Revenue Trend
+        print("\n[Graph 5] Creating: Daily Revenue Trend...")
+        daily_revenue = df_merged.groupby('date')['line_total_usd'].sum().reset_index()
+        daily_revenue['date'] = pd.to_datetime(daily_revenue['date'])
+        
+        fig, ax = plt.subplots(figsize=(12, 6))
+        ax.plot(daily_revenue['date'], daily_revenue['line_total_usd'], marker='o', linewidth=2.5, 
+                markersize=8, color='darkgreen')
+        ax.fill_between(daily_revenue['date'], daily_revenue['line_total_usd'], alpha=0.3, color='lightgreen')
+        
+        ax.set_xlabel('Date', fontsize=12)
+        ax.set_ylabel('Total Revenue (USD)', fontsize=12)
+        ax.set_title('Daily Revenue Trend', fontsize=14, fontweight='bold')
+        ax.grid(True, alpha=0.3)
+        
+        # Add value labels
+        for idx, row in daily_revenue.iterrows():
+            ax.text(row['date'], row['line_total_usd'], f"${row['line_total_usd']/1e6:.2f}M", 
+                   ha='center', va='bottom', fontsize=10)
+        
+        plt.xticks(rotation=45, ha='right')
+        plt.tight_layout()
+        plt.savefig('daily_revenue_trend.png', dpi=300, bbox_inches='tight')
+        plt.close()
+        print("✓ Saved as 'daily_revenue_trend.png'")
+        
+        # Graph 6: Device Type Revenue Distribution (Bar Chart)
+        print("\n[Graph 6] Creating: Revenue by Device Type...")
+        device_revenue = df_merged.groupby('device_type')['line_total_usd'].sum().sort_values(ascending=False)
+        
+        fig, ax = plt.subplots(figsize=(10, 6))
+        bars = ax.bar(range(len(device_revenue)), device_revenue.values, color='mediumpurple')
+        ax.set_xticks(range(len(device_revenue)))
+        ax.set_xticklabels(device_revenue.index, rotation=45, ha='right', fontsize=10)
+        ax.set_ylabel('Total Revenue (USD)', fontsize=12)
+        ax.set_title('Revenue by Device Type', fontsize=14, fontweight='bold')
+        ax.grid(axis='y', alpha=0.3)
+        
+        # Add value labels
+        for i, v in enumerate(device_revenue.values):
+            ax.text(i, v, f"${v/1e6:.2f}M", ha='center', va='bottom', fontsize=10)
+        
+        plt.tight_layout()
+        plt.savefig('revenue_by_device_type.png', dpi=300, bbox_inches='tight')
+        plt.close()
+        print("✓ Saved as 'revenue_by_device_type.png'")
+        
+        # Graph 7: Customer Spending Distribution (Histogram)
+        print("\n[Graph 7] Creating: Customer Spending Distribution...")
+        customer_spending = df_merged.groupby('customer_id')['line_total_usd'].sum()
+        
+        fig, ax = plt.subplots(figsize=(12, 6))
+        n, bins, patches = ax.hist(customer_spending, bins=50, color='skyblue', edgecolor='black', alpha=0.7)
+        ax.axvline(customer_spending.mean(), color='red', linestyle='--', linewidth=2, label=f'Mean: ${customer_spending.mean():,.2f}')
+        ax.axvline(customer_spending.median(), color='green', linestyle='--', linewidth=2, label=f'Median: ${customer_spending.median():,.2f}')
+        
+        ax.set_xlabel('Total Spending per Customer (USD)', fontsize=12)
+        ax.set_ylabel('Number of Customers', fontsize=12)
+        ax.set_title('Customer Spending Distribution (5-Day Period)', fontsize=14, fontweight='bold')
+        ax.legend(fontsize=10)
+        ax.grid(axis='y', alpha=0.3)
+        
+        plt.tight_layout()
+        plt.savefig('customer_spending_distribution.png', dpi=300, bbox_inches='tight')
+        plt.close()
+        print("✓ Saved as 'customer_spending_distribution.png'")
+        
+        print("\n✅ All visualizations created successfully!")
+        print("\nGenerated Files:")
+        print("  1. revenue_by_payment.png - Daily revenue by payment method")
+        print("  2. top_10_products_by_revenue.png - Top products")
+        print("  3. revenue_by_category_pie.png - Category revenue distribution")
+        print("  4. top_10_franchises_by_revenue.png - Top franchises")
+        print("  5. daily_revenue_trend.png - Revenue trend over time")
+        print("  6. revenue_by_device_type.png - Revenue by device type")
+        print("  7. customer_spending_distribution.png - Customer spending patterns")
+        
+    except Exception as e:
+        print(f"❌ Error creating visualizations: {e}")
+
+
+def main():
+    """
+    Main pipeline execution function.
+    """
+    print("\n" + "="*80)
+    print("DATA PIPELINE: Transaction and Inventory Analysis")
+    print("="*80)
+    
+    # Step 1: Load data
+    df_transactions, df_inventory = load_data()
+    if df_transactions is None or df_inventory is None:
+        print("\n❌ Pipeline failed at data loading step.")
+        sys.exit(1)
+    
+    # Step 2: Perform EDA
+    perform_eda(df_transactions, df_inventory)
+    
+    # Step 3: Process and aggregate
+    df_merged, franchise_col = process_and_aggregate(df_transactions, df_inventory)
+    if df_merged is None:
+        print("\n❌ Pipeline failed at data processing step.")
+        sys.exit(1)
+    
+    # Step 4: Bonus - Top returning users
+    bonus_top_returning_users(df_transactions)
+    
+    # Step 5: Create multiple visualizations
+    create_visualizations(df_merged)
+    
+    print("\n" + "="*80)
+    print("✓ PIPELINE EXECUTION COMPLETED SUCCESSFULLY")
+    print("="*80 + "\n")
+
+
 if __name__ == "__main__":
     main()
  
